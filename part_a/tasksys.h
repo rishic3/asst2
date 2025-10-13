@@ -2,6 +2,11 @@
 #define _TASKSYS_H
 
 #include "itasksys.h"
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <atomic>
+#include <condition_variable>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -45,6 +50,20 @@ class TaskSystemParallelSpawn: public ITaskSystem {
  * documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
+    private:
+        int num_threads;
+
+        IRunnable* runnable;
+        int num_total_tasks;
+
+        int num_runnable_tasks;
+        int granularity;
+        std::atomic<int> num_completed_tasks;
+        std::mutex mtx;
+        std::atomic<bool> shutdown;
+
+        std::vector<std::thread> workers;
+        void workerFunc(int thread_id);
     public:
         TaskSystemParallelThreadPoolSpinning(int num_threads);
         ~TaskSystemParallelThreadPoolSpinning();
@@ -62,6 +81,22 @@ class TaskSystemParallelThreadPoolSpinning: public ITaskSystem {
  * itasksys.h for documentation of the ITaskSystem interface.
  */
 class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
+    private:
+        int num_threads;
+
+        IRunnable* runnable;
+        int num_total_tasks;
+
+        int num_runnable_tasks;
+        int granularity;
+        std::atomic<int> num_completed_tasks;
+        std::mutex mtx;
+        std::condition_variable has_work;
+        std::condition_variable all_done;
+        std::atomic<bool> shutdown;
+
+        std::vector<std::thread> workers;
+        void workerFunc(int thread_id);
     public:
         TaskSystemParallelThreadPoolSleeping(int num_threads);
         ~TaskSystemParallelThreadPoolSleeping();
