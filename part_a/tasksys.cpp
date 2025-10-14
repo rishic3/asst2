@@ -72,7 +72,7 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
         threads_to_use = num_total_tasks;
     }
 
-    std::thread workers[threads_to_use-1];
+    std::thread workers[threads_to_use];
     int tasks_per_worker = num_total_tasks / threads_to_use;
     int remainder = num_total_tasks % threads_to_use;
 
@@ -83,15 +83,15 @@ void TaskSystemParallelSpawn::run(IRunnable* runnable, int num_total_tasks) {
         }
     };
 
-    for (int i = 0; i < threads_to_use - 1; ++i) {
-        // int num_worker_tasks = tasks_per_worker;
-        // if (i == threads_to_use - 1) num_worker_tasks += remainder;  // last thread gets remainder
-        workers[i] = std::thread(worker_func, tasks_per_worker, i * tasks_per_worker);
+    for (int i = 0; i < threads_to_use; ++i) {
+        int num_worker_tasks = tasks_per_worker;
+        if (i == threads_to_use - 1) num_worker_tasks += remainder;  // last thread gets remainder
+        workers[i] = std::thread(worker_func, num_worker_tasks, i * tasks_per_worker);
     }
 
-    worker_func(tasks_per_worker + remainder,  (threads_to_use - 1) * tasks_per_worker);
+    // worker_func(tasks_per_worker + remainder,  (threads_to_use - 1) * tasks_per_worker);
     
-    for (int i = 0; i < threads_to_use - 1; ++i) {
+    for (int i = 0; i < threads_to_use; ++i) {
         workers[i].join();
     }
 }
