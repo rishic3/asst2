@@ -131,8 +131,6 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
 }
 
 void TaskSystemParallelThreadPoolSleeping::workerFunc(int thread_id) {
-    int my_runnable_tasks;
-    int start_task_id;
     
     std::unique_lock<std::mutex> lock(mtx_);
 
@@ -141,39 +139,39 @@ void TaskSystemParallelThreadPoolSleeping::workerFunc(int thread_id) {
         if (shutdown_) break;
 
         // get runnable task from front of queue
-        BulkTask& task = all_tasks_.at(runnable_tasks_.front());
-        my_runnable_tasks = std::min(task.num_runnable_tasks, task.granularity);
-        start_task_id = task.num_total_tasks - task.num_runnable_tasks;
-        task.num_runnable_tasks -= my_runnable_tasks;
+        TaskID task_id = runnable_tasks_.front();
+        int my_runnable_tasks = std::min(all_tasks_[task_id].num_runnable_tasks, all_tasks_[task_id].granularity);
+        int start_task_id = all_tasks_[task_id].num_total_tasks - all_tasks_[task_id].num_runnable_tasks;
+        int num_total_tasks = all_tasks_[task_id].num_total_tasks;
+        IRunnable* runnable = all_tasks_[task_id].runnable;
+        all_tasks_[task_id].num_runnable_tasks -= my_runnable_tasks;
 
         // if no runnable work left for this task, remove from queue
-        if (task.num_runnable_tasks == 0) runnable_tasks_.pop_front();
+        if (all_tasks_[task_id].num_runnable_tasks == 0) runnable_tasks_.pop_front();
 
         lock.unlock();
 
         // run my_runnable_tasks instances of the current runnable
         for (int i = start_task_id; i < start_task_id + my_runnable_tasks; ++i) {
-            task.runnable->runTask(i, task.num_total_tasks);
+            runnable->runTask(i, num_total_tasks);
         }
         
         lock.lock();
         // update completion count
-        task.num_completed_tasks += my_runnable_tasks;
+        all_tasks_[task_id].num_completed_tasks += my_runnable_tasks;
 
         // check if task completed
-        if (task.num_completed_tasks == task.num_total_tasks) {
-            task.completed = true;
+        if (all_tasks_[task_id].num_completed_tasks == all_tasks_[task_id].num_total_tasks) {
+            all_tasks_[task_id].completed = true;
             num_incomplete_--;
 
             // check for waiting dependents
-            auto it = dependents_.find(task.id);
-            if (it != dependents_.end()) {
+            if (!dependents_[task_id].empty()) {
                 // decrement unmet dependency count
-                for (auto dep_id : it->second) {
-                    BulkTask& dep_task = all_tasks_.at(dep_id);
-                    dep_task.num_unmet_deps--;
+                for (auto dep_id : dependents_[task_id]) {
+                    all_tasks_[dep_id].num_unmet_deps--;
                     // if the dependent is now unblocked, enqueue
-                    if (dep_task.num_unmet_deps == 0) {
+                    if (all_tasks_[dep_id].num_unmet_deps == 0) {
                         runnable_tasks_.push_back(dep_id);
                         has_work_cv_.notify_all();
                     }
@@ -188,8 +186,6 @@ void TaskSystemParallelThreadPoolSleeping::workerFunc(int thread_id) {
 
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads)
     : ITaskSystem(num_threads), num_threads(num_threads) {
-
-    next_task_id_ = 0;
     num_incomplete_ = 0;
     shutdown_ = false;
     for (int i = 0; i < num_threads; ++i) {
@@ -217,9 +213,6 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
 
-    TaskID task_id = next_task_id_;
-    int num_unmet_deps = static_cast<int>(deps.size());
-
     // compute granularity
     int granularity;
     if (num_total_tasks <= num_threads * 2) {
@@ -228,28 +221,28 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
         granularity = std::max(num_total_tasks / (num_threads * 4), 1);
     }
 
+    int num_unmet_deps = static_cast<int>(deps.size());
+
     std::unique_lock<std::mutex> lock(mtx_);
 
+    TaskID task_id = all_tasks_.size();
+
     // check dependencies
+    dependents_.resize(task_id + 1);
     for (auto dep_id : deps) {
-        if (all_tasks_.at(dep_id).completed) {
+        if (all_tasks_[dep_id].completed) {
             // if dependency already completed, decrement dependencies
             num_unmet_deps--;
         } else {
             // otherwise, add to reverse dependency map
-            auto it = dependents_.find(dep_id);
-            if (it != dependents_.end()) {
-                it->second.push_back(task_id);
-            } else {
-                dependents_[dep_id] = {task_id};
-            }
+            dependents_[dep_id].push_back(task_id);
         }   
     }
 
     // add to all_tasks
-    BulkTask task = {task_id,runnable, granularity, num_total_tasks,
-        num_total_tasks, num_unmet_deps, 0, false};
-    all_tasks_[task_id] = task;
+    all_tasks_.push_back({task_id,runnable, granularity,
+        num_total_tasks, num_total_tasks,
+        num_unmet_deps, 0, false});
     num_incomplete_++;
     
     // if already runnable, enqueue
@@ -258,8 +251,6 @@ TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnabl
     }
     
     lock.unlock();
-
-    next_task_id_++;
 
     // notify workers
     has_work_cv_.notify_all();
@@ -274,5 +265,4 @@ void TaskSystemParallelThreadPoolSleeping::sync() {
     all_tasks_.clear();
     dependents_.clear();
     runnable_tasks_.clear();
-    next_task_id_ = 0;
 }

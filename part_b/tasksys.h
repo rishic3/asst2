@@ -2,14 +2,12 @@
 #define _TASKSYS_H
 
 #include "itasksys.h"
-#include <unordered_set>
 #include <vector>
 #include <deque>
 #include <mutex>
 #include <atomic>
 #include <condition_variable>
 #include <thread>
-#include <unordered_map>
 
 /*
  * TaskSystemSerial: This class is the student's implementation of a
@@ -84,7 +82,6 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         };
 
         int num_threads;
-        TaskID next_task_id_;
 
         // synchronization
         std::mutex mtx_;
@@ -92,12 +89,12 @@ class TaskSystemParallelThreadPoolSleeping: public ITaskSystem {
         std::condition_variable all_done_cv_;
         std::atomic<bool> shutdown_;
 
-        std::unordered_map<TaskID, BulkTask> all_tasks_;  // all scheduled tasks
+        std::vector<BulkTask> all_tasks_;  // all scheduled tasks
         std::deque<TaskID> runnable_tasks_;  // ready to run tasks (num_unmet_deps == 0)
         int num_incomplete_;  // num tasks yet to be completed
 
-        // reverse dependency map: tid -> [tids that depend on it]
-        std::unordered_map<TaskID, std::vector<TaskID>> dependents_;
+        // reverse dependency map: index a -> [tasks that depend on a]
+        std::vector<std::vector<TaskID>> dependents_;
 
         std::vector<std::thread> workers_;
         void workerFunc(int thread_id);
