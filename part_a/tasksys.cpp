@@ -273,7 +273,6 @@ TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
     std::unique_lock<std::mutex> lock(mtx);
     // set up run
     this->num_total_tasks = num_total_tasks;

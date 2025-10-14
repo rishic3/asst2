@@ -1,5 +1,9 @@
 #include "tasksys.h"
-
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <unordered_map>
+#include <condition_variable>
 
 IRunnable::~IRunnable() {}
 
@@ -126,58 +130,149 @@ const char* TaskSystemParallelThreadPoolSleeping::name() {
     return "Parallel + Thread Pool + Sleep";
 }
 
-TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads): ITaskSystem(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+void TaskSystemParallelThreadPoolSleeping::workerFunc(int thread_id) {
+    int my_runnable_tasks;
+    int start_task_id;
+    
+    std::unique_lock<std::mutex> lock(mtx_);
+
+    while (!shutdown_) {
+        has_work_cv_.wait(lock, [this]{ return !runnable_tasks_.empty() || shutdown_; });
+        if (shutdown_) break;
+
+        // get runnable task from front of queue
+        BulkTask& task = all_tasks_.at(runnable_tasks_.front());
+        my_runnable_tasks = std::min(task.num_runnable_tasks, task.granularity);
+        start_task_id = task.num_total_tasks - task.num_runnable_tasks;
+        task.num_runnable_tasks -= my_runnable_tasks;
+
+        // if no runnable work left for this task, remove from queue
+        if (task.num_runnable_tasks == 0) runnable_tasks_.pop_front();
+
+        lock.unlock();
+
+        // run my_runnable_tasks instances of the current runnable
+        for (int i = start_task_id; i < start_task_id + my_runnable_tasks; ++i) {
+            task.runnable->runTask(i, task.num_total_tasks);
+        }
+        
+        lock.lock();
+        // update completion count
+        task.num_completed_tasks += my_runnable_tasks;
+
+        // check if task completed
+        if (task.num_completed_tasks == task.num_total_tasks) {
+            task.completed = true;
+            num_incomplete_--;
+
+            // check for waiting dependents
+            auto it = dependents_.find(task.id);
+            if (it != dependents_.end()) {
+                // decrement unmet dependency count
+                for (auto dep_id : it->second) {
+                    BulkTask& dep_task = all_tasks_.at(dep_id);
+                    dep_task.num_unmet_deps--;
+                    // if the dependent is now unblocked, enqueue
+                    if (dep_task.num_unmet_deps == 0) {
+                        runnable_tasks_.push_back(dep_id);
+                        has_work_cv_.notify_all();
+                    }
+                }
+            }
+
+            // if all tasks completed, notify completion
+            if (num_incomplete_ == 0) all_done_cv_.notify_one();
+        }
+    }
+}
+
+TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads)
+    : ITaskSystem(num_threads), num_threads(num_threads) {
+
+    next_task_id_ = 0;
+    num_incomplete_ = 0;
+    shutdown_ = false;
+    for (int i = 0; i < num_threads; ++i) {
+        workers_.emplace_back(std::thread(&TaskSystemParallelThreadPoolSleeping::workerFunc, this, i));
+    }
 }
 
 TaskSystemParallelThreadPoolSleeping::~TaskSystemParallelThreadPoolSleeping() {
-    //
-    // TODO: CS149 student implementations may decide to perform cleanup
-    // operations (such as thread pool shutdown construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
+    {
+        std::unique_lock<std::mutex> lock(mtx_);
+        shutdown_ = true;
+    }
+    has_work_cv_.notify_all();
+    for (auto& worker : workers_) {
+        worker.join();
+    }
 }
 
 void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_total_tasks) {
-
-
-    //
-    // TODO: CS149 students will modify the implementation of this
-    // method in Parts A and B.  The implementation provided below runs all
-    // tasks sequentially on the calling thread.
-    //
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
-    }
+    std::vector<TaskID> deps;
+    runAsyncWithDeps(runnable, num_total_tasks, deps);
+    sync();
 }
 
 TaskID TaskSystemParallelThreadPoolSleeping::runAsyncWithDeps(IRunnable* runnable, int num_total_tasks,
                                                     const std::vector<TaskID>& deps) {
 
+    TaskID task_id = next_task_id_;
+    int num_unmet_deps = static_cast<int>(deps.size());
 
-    //
-    // TODO: CS149 students will implement this method in Part B.
-    //
-
-    for (int i = 0; i < num_total_tasks; i++) {
-        runnable->runTask(i, num_total_tasks);
+    // compute granularity
+    int granularity;
+    if (num_total_tasks <= num_threads * 2) {
+        granularity = std::max(num_total_tasks / num_threads, 1);  
+    } else {
+        granularity = std::max(num_total_tasks / (num_threads * 4), 1);
     }
 
-    return 0;
+    std::unique_lock<std::mutex> lock(mtx_);
+
+    // check dependencies
+    for (auto dep_id : deps) {
+        if (all_tasks_.at(dep_id).completed) {
+            // if dependency already completed, decrement dependencies
+            num_unmet_deps--;
+        } else {
+            // otherwise, add to reverse dependency map
+            auto it = dependents_.find(dep_id);
+            if (it != dependents_.end()) {
+                it->second.push_back(task_id);
+            } else {
+                dependents_[dep_id] = {task_id};
+            }
+        }   
+    }
+
+    // add to all_tasks
+    BulkTask task = {task_id,runnable, granularity, num_total_tasks,
+        num_total_tasks, num_unmet_deps, 0, false};
+    all_tasks_[task_id] = task;
+    num_incomplete_++;
+    
+    // if already runnable, enqueue
+    if (num_unmet_deps == 0) {
+        runnable_tasks_.push_back(task_id);
+    }
+    
+    lock.unlock();
+
+    next_task_id_++;
+
+    // notify workers
+    has_work_cv_.notify_all();
+    return task_id;
 }
 
 void TaskSystemParallelThreadPoolSleeping::sync() {
-
-    //
-    // TODO: CS149 students will modify the implementation of this method in Part B.
-    //
-
-    return;
+    std::unique_lock<std::mutex> lock(mtx_);
+    all_done_cv_.wait(lock, [this]{ return num_incomplete_ == 0; });
+    
+    // clear data structures
+    all_tasks_.clear();
+    dependents_.clear();
+    runnable_tasks_.clear();
+    next_task_id_ = 0;
 }
