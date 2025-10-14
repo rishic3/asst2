@@ -254,12 +254,6 @@ void TaskSystemParallelThreadPoolSleeping::workerFunc(int thread_id) {
 
 TaskSystemParallelThreadPoolSleeping::TaskSystemParallelThreadPoolSleeping(int num_threads)
     : ITaskSystem(num_threads), num_threads(num_threads) {
-    //
-    // TODO: CS149 student implementations may decide to perform setup
-    // operations (such as thread pool construction) here.
-    // Implementations are free to add new class member variables
-    // (requiring changes to tasksys.h).
-    //
     num_runnable_tasks = 0;
     shutdown = false;
     for (int i = 0; i < num_threads; ++i) {
@@ -300,7 +294,7 @@ void TaskSystemParallelThreadPoolSleeping::run(IRunnable* runnable, int num_tota
     // wake threads
     has_work.notify_all();
 
-    // wait for completion
+    // main thread waits for completion
     lock.lock();
     all_done.wait(lock, [this]{ return num_completed_tasks == this->num_total_tasks; });
     lock.unlock();
